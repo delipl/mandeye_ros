@@ -8,6 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(realtime_tools REQUIRED)
 
 message("LASzip library")
 
@@ -19,7 +20,7 @@ ament_target_dependencies(${PROJECT_NAME} rclcpp)
 target_include_directories(${PROJECT_NAME} PRIVATE 3rd/json 3rd/LASzip/include include/)
 target_link_libraries(${PROJECT_NAME} pthread laszip )
 
-ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs)
+ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs realtime_tools)
 
 install(TARGETS
   ${PROJECT_NAME}
