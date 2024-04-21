@@ -64,9 +64,11 @@ private:
 	void saveImuData(std::deque<sensor_msgs::msg::Imu::SharedPtr>& imu_deque, const std::string& directory, int chunk)
 	{
 		using namespace std::chrono_literals;
-		const std::string file_name = "imu" + std::to_string(chunk) + ".csv";
+		std::stringstream file_name_ss;
+		file_name_ss << "imu" << std::setfill('0') << std::setw(4) << std::to_string(chunk) << ".csv";
+
 		// std::filesystem::path lidarFilePath = std::filesystem::path(directory) / std::filesystem::path(file_name);
-		const std::string lidarFilePath = directory + "/" + file_name;
+		const std::string lidarFilePath = directory + "/" + file_name_ss.str();
 		const std::size_t size_to_save = imu_deque.size();
 		RCLCPP_INFO_STREAM(get_logger(), "Saving imu buffer of size " << size_to_save << " to " << lidarFilePath);
 
@@ -79,10 +81,8 @@ private:
 			auto timestamp = static_cast<std::size_t>(imu_msg->header.stamp.sec * 1e9 + imu_msg->header.stamp.nanosec);
 
 			imu_deque.pop_front();
-			ss << std::fixed << std::setw(20) << std::setprecision(14) << timestamp << " " << std::fixed << std::setw(20)
-			   << imu_msg->angular_velocity.x << " " << std::fixed << std::setw(20) << imu_msg->angular_velocity.y << " " << std::fixed
-			   << std::setw(20) << imu_msg->angular_velocity.z << " " << std::fixed << std::setw(20) << imu_msg->linear_acceleration.x << " "
-			   << std::fixed << std::setw(20) << imu_msg->linear_acceleration.y << " " << std::fixed << std::setw(20)
+			ss << std::setprecision(7) << timestamp << " " << imu_msg->angular_velocity.x << " " << imu_msg->angular_velocity.y << " "
+			   << imu_msg->angular_velocity.z << " " << imu_msg->linear_acceleration.x << " " << imu_msg->linear_acceleration.y << " "
 			   << imu_msg->linear_acceleration.z << std::endl;
 		}
 
@@ -95,8 +95,10 @@ private:
 	void savePointcloudData(std::deque<pcl::PointCloud<pcl::LivoxPoint>::Ptr>& pc2_deque, const std::string& directory, int chunk)
 	{
 		using namespace std::chrono_literals;
-		const std::string file_name = "lidar" + std::to_string(chunk) + ".laz";
-		const std::string lidarFilePath = directory + "/" + file_name;
+		std::stringstream file_name_ss;
+		file_name_ss << "lidar" << std::setfill('0') << std::setw(4) << std::to_string(chunk) << ".laz";
+
+		const std::string lidarFilePath = directory + "/" + file_name_ss.str();
 		const std::size_t size_to_save = pc2_deque.size();
 		// std::filesystem::path lidarFilePath = std::filesystem::path(directory) / std::filesystem::path(lidarName);
 
