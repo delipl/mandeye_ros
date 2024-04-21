@@ -1,11 +1,12 @@
 #include "mandeye_ros/save_laz.h"
+#include <cstring>
 #include <iostream>
 #include <laszip/laszip_api.h>
+#include <limits>
 
-bool mandeye::saveLaz(const std::string& filename, mandeye::LivoxPointsBufferPtr buffer)
+bool mandeye::saveLaz(const std::string& filename, std::deque<pcl::PointCloud<pcl::LivoxPoint>::Ptr>& buffer)
 {
 
-	constexpr float scale = 0.0001f; // one tenth of milimeter
 	// find max
 	double max_x{std::numeric_limits<double>::lowest()};
 	double max_y{std::numeric_limits<double>::lowest()};
@@ -14,23 +15,28 @@ bool mandeye::saveLaz(const std::string& filename, mandeye::LivoxPointsBufferPtr
 	double min_x{std::numeric_limits<double>::max()};
 	double min_y{std::numeric_limits<double>::max()};
 	double min_z{std::numeric_limits<double>::max()};
-
-	for(auto& p : *buffer)
+	std::size_t chunk_size = 0;
+	
+	for(auto& cloud : buffer)
 	{
-		double x = 0.001 * p.point.x;
-		double y = 0.001 * p.point.y;
-		double z = 0.001 * p.point.z;
+		chunk_size += cloud->points.size();
+		for(auto& p : cloud->points)
+		{
+			const double x = p.x;
+			const double y = p.y;
+			const double z = p.z;
 
-		max_x = std::max(max_x, x);
-		max_y = std::max(max_y, y);
-		max_z = std::max(max_z, z);
+			max_x = std::max(max_x, x);
+			max_y = std::max(max_y, y);
+			max_z = std::max(max_z, z);
 
-		min_x = std::min(min_x, x);
-		min_y = std::min(min_y, y);
-		min_z = std::min(min_z, z);
+			min_x = std::min(min_x, x);
+			min_y = std::min(min_y, y);
+			min_z = std::min(min_z, z);
+		}
 	}
 
-	std::cout << "processing: " << filename << "points " << buffer->size() << std::endl;
+	std::cout << "processing: " << filename << "points " << chunk_size << std::endl;
 
 	laszip_POINTER laszip_writer;
 	if(laszip_create(&laszip_writer))
@@ -59,13 +65,13 @@ bool mandeye::saveLaz(const std::string& filename, mandeye::LivoxPointsBufferPtr
 	//    header->file_creation_year = 2013;
 	header->point_data_format = 1;
 	header->point_data_record_length = 0;
-	header->number_of_point_records = buffer->size();
-	header->number_of_points_by_return[0] = buffer->size();
+	header->number_of_point_records = chunk_size;
+	header->number_of_points_by_return[0] = chunk_size;
 	header->number_of_points_by_return[1] = 0;
 	header->point_data_record_length = 28;
-	header->x_scale_factor = scale;
-	header->y_scale_factor = scale;
-	header->z_scale_factor = scale;
+	header->x_scale_factor = 1;
+	header->y_scale_factor = 1;
+	header->z_scale_factor = 1;
 
 	header->max_x = max_x;
 	header->min_x = min_x;
@@ -96,31 +102,36 @@ bool mandeye::saveLaz(const std::string& filename, mandeye::LivoxPointsBufferPtr
 	}
 
 	laszip_I64 p_count = 0;
+	laszip_I64 p_r_count = 0;
 	laszip_F64 coordinates[3];
 
-	for(std::size_t i = 0; i < buffer->size(); i++)
-	{
+	while(buffer.size()){
+		auto cloud = buffer.front();
+		buffer.pop_front();
 
-		const auto& p = buffer->at(i);
-		point->intensity = p.point.reflectivity;
-		point->gps_time = p.timestamp * 1e-9;
-		point->user_data = p.line_id;
-		point->classification = p.point.tag;
-		point->user_data = p.laser_id;
-		p_count++;
-		coordinates[0] = 0.001 * p.point.x;
-		coordinates[1] = 0.001 * p.point.y;
-		coordinates[2] = 0.001 * p.point.z;
-		if(laszip_set_coordinates(laszip_writer, coordinates))
+		for(auto& p : cloud->points)
 		{
-			fprintf(stderr, "DLL ERROR: setting coordinates for point %ld\n", p_count);
-			return false;
-		}
+			point->intensity = p.intensity;
+			point->gps_time = p.timestamp *1e-9;
+			point->user_data = p.line;
+			point->classification = p.tag;
+			point->user_data = 0; // TODO: @delipl what is that?
+			++p_count;
+			++p_r_count;
+			coordinates[0] = p.x;
+			coordinates[1] = p.y;
+			coordinates[2] = p.z;
+			if(laszip_set_coordinates(laszip_writer, coordinates))
+			{
+				fprintf(stderr, "DLL ERROR: setting coordinates for point %ld\n", p_count);
+				return false;
+			}
 
-		if(laszip_write_point(laszip_writer))
-		{
-			fprintf(stderr, "DLL ERROR: writing point %ld\n", p_count);
-			return false;
+			if(laszip_write_point(laszip_writer))
+			{
+				fprintf(stderr, "DLL ERROR: writing point %ld\n", p_count);
+				return false;
+			}
 		}
 	}
 
@@ -130,7 +141,7 @@ bool mandeye::saveLaz(const std::string& filename, mandeye::LivoxPointsBufferPtr
 		return false;
 	}
 
-	fprintf(stderr, "successfully written %ld points\n", p_count);
+	fprintf(stderr, "successfully written %ld points and should %ld\n", p_count, p_r_count);
 
 	// close the writer
 
