@@ -4,9 +4,10 @@
 #include <laszip/laszip_api.h>
 #include <limits>
 
-bool mandeye::saveLaz(const std::string& filename, std::deque<pcl::PointCloud<pcl::LivoxPoint>::Ptr>& buffer)
+bool mandeye::saveLaz(const std::string& filename, std::deque<Point>& buffer)
 {
 
+	constexpr float scale = 0.0001f; // one tenth of milimeter
 	// find max
 	double max_x{std::numeric_limits<double>::lowest()};
 	double max_y{std::numeric_limits<double>::lowest()};
@@ -15,28 +16,23 @@ bool mandeye::saveLaz(const std::string& filename, std::deque<pcl::PointCloud<pc
 	double min_x{std::numeric_limits<double>::max()};
 	double min_y{std::numeric_limits<double>::max()};
 	double min_z{std::numeric_limits<double>::max()};
-	std::size_t chunk_size = 0;
-	
-	for(auto& cloud : buffer)
+
+	for(auto p : buffer)
 	{
-		chunk_size += cloud->points.size();
-		for(auto& p : cloud->points)
-		{
-			const double x = p.x;
-			const double y = p.y;
-			const double z = p.z;
+		double x = p.point.x();
+		double y = p.point.y();
+		double z = p.point.z();
 
-			max_x = std::max(max_x, x);
-			max_y = std::max(max_y, y);
-			max_z = std::max(max_z, z);
+		max_x = std::max(max_x, x);
+		max_y = std::max(max_y, y);
+		max_z = std::max(max_z, z);
 
-			min_x = std::min(min_x, x);
-			min_y = std::min(min_y, y);
-			min_z = std::min(min_z, z);
-		}
+		min_x = std::min(min_x, x);
+		min_y = std::min(min_y, y);
+		min_z = std::min(min_z, z);
 	}
 
-	std::cout << "processing: " << filename << "points " << chunk_size << std::endl;
+	std::cout << "processing: " << filename << "points " << buffer.size() << std::endl;
 
 	laszip_POINTER laszip_writer;
 	if(laszip_create(&laszip_writer))
@@ -65,13 +61,13 @@ bool mandeye::saveLaz(const std::string& filename, std::deque<pcl::PointCloud<pc
 	//    header->file_creation_year = 2013;
 	header->point_data_format = 1;
 	header->point_data_record_length = 0;
-	header->number_of_point_records = chunk_size;
-	header->number_of_points_by_return[0] = chunk_size;
+	header->number_of_point_records = buffer.size();
+	header->number_of_points_by_return[0] = buffer.size();
 	header->number_of_points_by_return[1] = 0;
 	header->point_data_record_length = 28;
-	header->x_scale_factor = 1;
-	header->y_scale_factor = 1;
-	header->z_scale_factor = 1;
+	header->x_scale_factor = scale;
+	header->y_scale_factor = scale;
+	header->z_scale_factor = scale;
 
 	header->max_x = max_x;
 	header->min_x = min_x;
@@ -102,36 +98,30 @@ bool mandeye::saveLaz(const std::string& filename, std::deque<pcl::PointCloud<pc
 	}
 
 	laszip_I64 p_count = 0;
-	laszip_I64 p_r_count = 0;
 	laszip_F64 coordinates[3];
 
-	while(buffer.size()){
-		auto cloud = buffer.front();
-		buffer.pop_front();
+	for(int i = 0; i < buffer.size(); i++)
+	{
 
-		for(auto& p : cloud->points)
+		const auto& p = buffer.at(i);
+		point->intensity = p.intensity;
+		point->gps_time = p.timestamp * 1e-9;
+//		point->user_data = p.line_id;
+//		point->classification = p.tag;
+		p_count++;
+		coordinates[0] = p.point[0];
+		coordinates[1] = p.point[1];
+		coordinates[2] = p.point[2];
+		if(laszip_set_coordinates(laszip_writer, coordinates))
 		{
-			point->intensity = p.intensity;
-			point->gps_time = p.timestamp *1e-9;
-			point->user_data = p.line;
-			point->classification = p.tag;
-			point->user_data = 0; // TODO: @delipl what is that?
-			++p_count;
-			++p_r_count;
-			coordinates[0] = p.x;
-			coordinates[1] = p.y;
-			coordinates[2] = p.z;
-			if(laszip_set_coordinates(laszip_writer, coordinates))
-			{
-				fprintf(stderr, "DLL ERROR: setting coordinates for point %ld\n", p_count);
-				return false;
-			}
+			fprintf(stderr, "DLL ERROR: setting coordinates for point %I64d\n", p_count);
+			return false;
+		}
 
-			if(laszip_write_point(laszip_writer))
-			{
-				fprintf(stderr, "DLL ERROR: writing point %ld\n", p_count);
-				return false;
-			}
+		if(laszip_write_point(laszip_writer))
+		{
+			fprintf(stderr, "DLL ERROR: writing point %I64d\n", p_count);
+			return false;
 		}
 	}
 
@@ -141,7 +131,7 @@ bool mandeye::saveLaz(const std::string& filename, std::deque<pcl::PointCloud<pc
 		return false;
 	}
 
-	fprintf(stderr, "successfully written %ld points and should %ld\n", p_count, p_r_count);
+	fprintf(stderr, "successfully written %I64d points\n", p_count);
 
 	// close the writer
 

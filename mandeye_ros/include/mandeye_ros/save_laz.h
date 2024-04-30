@@ -7,5 +7,11 @@
 
 namespace mandeye
 {
-bool saveLaz(const std::string& filename, std::deque<pcl::PointCloud<pcl::LivoxPoint>::Ptr>& buffer);
+struct Point {
+    double timestamp;
+    float intensity;
+    Eigen::Vector3d point;
+};
+
+bool saveLaz(const std::string& filename, std::deque<Point>& buffer);
 }

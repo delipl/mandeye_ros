@@ -5,7 +5,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 
+#include "sensor_msgs/point_cloud2_iterator.hpp"
 #include <mandeye_ros/point_types.hpp>
 #include <mandeye_ros/save_laz.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -15,29 +17,53 @@ public:
 	LivoxSubscriber()
 		: Node("mandeye")
 	{
+
+		cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+
+		rclcpp::SubscriptionOptions options;
+		options.callback_group = cb_group_;
 		imu_subscription_ =
-			this->create_subscription<sensor_msgs::msg::Imu>("/livox/imu", 10, std::bind(&LivoxSubscriber::imuCallback, this, std::placeholders::_1));
+			this->create_subscription<sensor_msgs::msg::Imu>("/livox/imu", 10, std::bind(&LivoxSubscriber::imuCallback, this, std::placeholders::_1), options);
 
 		pointcloud_subscription_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-			"/livox/lidar", 10, std::bind(&LivoxSubscriber::pointcloudCallback, this, std::placeholders::_1));
+			"/livox/lidar", 10, std::bind(&LivoxSubscriber::pointcloudCallback, this, std::placeholders::_1), options	);
 
-		timer_ = this->create_wall_timer(std::chrono::seconds(1), std::bind(&LivoxSubscriber::timerCallback, this));
+		timer_ = this->create_wall_timer(std::chrono::seconds(1), std::bind(&LivoxSubscriber::timerCallback, this), cb_group_);
 	}
 
 private:
 	void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
 	{
 		sensor_msgs::msg::Imu::SharedPtr copied(msg);
+		m1.lock();
 		imu_deque.push_back(copied);
+		m1.unlock();
 	}
 
 	void pointcloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 	{
-		pcl::PCLPointCloud2 temp_cloud;
-		pcl::PointCloud<pcl::LivoxPoint>::Ptr cloud(new pcl::PointCloud<pcl::LivoxPoint>);
-		pcl_conversions::toPCL(*msg, temp_cloud);
-		pcl::fromPCLPointCloud2(temp_cloud, *cloud);
-		pc2_deque.push_back(cloud);
+		std::deque<mandeye::Point> temp;
+		sensor_msgs::PointCloud2ConstIterator<float> x_it(*msg, "x");
+		sensor_msgs::PointCloud2ConstIterator<float> y_it(*msg, "y");
+		sensor_msgs::PointCloud2ConstIterator<float> z_it(*msg, "z");
+		sensor_msgs::PointCloud2ConstIterator<float> i_it(*msg, "intensity");
+
+		int point_counter = 0;
+		for (; x_it != x_it.end(); ++x_it, ++y_it, ++z_it, ++i_it) {
+			mandeye::Point point;
+			point.point.x() = *x_it;
+			point.point.y() = *y_it;
+			point.point.z() = *z_it;
+			point.intensity = *i_it;
+
+			point.timestamp = rclcpp::Time(msg->header.stamp).nanoseconds();
+			temp.push_back(point);
+			point_counter++;
+		}
+
+		m2.lock();
+		pc2_deque.insert(pc2_deque.end(), temp.begin(), temp.end());
+		m2.unlock();
 	}
 
 	void timerCallback()
@@ -48,17 +74,27 @@ private:
 		}
 		RCLCPP_INFO(get_logger(), "Saving...");
 
-		saveImuData(imu_deque, "./data", chunk_counter);
-		savePointcloudData(pc2_deque, "./data", chunk_counter);
+
+		std::scoped_lock(m1, m2);
+		std::deque<sensor_msgs::msg::Imu::SharedPtr> imu_deque_copy{imu_deque};
+		std::deque<mandeye::Point> pc2_deque_copy{pc2_deque};
+		imu_deque.clear();
+		pc2_deque.clear();
+
+		saveImuData(imu_deque_copy, "./data", chunk_counter);
+		savePointcloudData(pc2_deque_copy, "./data", chunk_counter);
 
 		chunk_counter++;
 	}
 
+	std::mutex m1;
+	std::mutex m2;
+	rclcpp::CallbackGroup::SharedPtr cb_group_;
 	rclcpp::TimerBase::SharedPtr timer_;
 	rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
 	std::deque<sensor_msgs::msg::Imu::SharedPtr> imu_deque;
 	rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_subscription_;
-	std::deque<pcl::PointCloud<pcl::LivoxPoint>::Ptr> pc2_deque;
+	std::deque<mandeye::Point> pc2_deque;
 	std::size_t chunk_counter;
 
 	void saveImuData(std::deque<sensor_msgs::msg::Imu::SharedPtr>& imu_deque, const std::string& directory, int chunk)
@@ -78,12 +114,11 @@ private:
 		for(auto i = 0u; i < size_to_save; ++i)
 		{
 			sensor_msgs::msg::Imu::SharedPtr imu_msg = imu_deque.front();
-			auto timestamp = static_cast<std::size_t>(imu_msg->header.stamp.sec * 1e9 + imu_msg->header.stamp.nanosec);
 
 			imu_deque.pop_front();
-			ss << std::setprecision(7) << timestamp << " " << imu_msg->angular_velocity.x << " " << imu_msg->angular_velocity.y << " "
-			   << imu_msg->angular_velocity.z << " " << imu_msg->linear_acceleration.x << " " << imu_msg->linear_acceleration.y << " "
-			   << imu_msg->linear_acceleration.z << std::endl;
+			ss << rclcpp::Time(imu_msg->header.stamp).nanoseconds() << " " <<  imu_msg->angular_velocity.x << " " << imu_msg->angular_velocity.y
+            << " " << imu_msg->angular_velocity.z << " " << imu_msg->linear_acceleration.x << " " << imu_msg->linear_acceleration.y << " "
+            << imu_msg->linear_acceleration.z;
 		}
 
 		lidarStream << ss.rdbuf();
@@ -92,7 +127,7 @@ private:
 		return;
 	}
 
-	void savePointcloudData(std::deque<pcl::PointCloud<pcl::LivoxPoint>::Ptr>& pc2_deque, const std::string& directory, int chunk)
+	void savePointcloudData(std::deque<mandeye::Point>& pc2_deque, const std::string& directory, int chunk)
 	{
 		using namespace std::chrono_literals;
 		std::stringstream file_name_ss;
